@@ -1,0 +1,32 @@
+# 数据、模型、生成结果（体积大，且数据仅限科研使用，不随仓库分发）
+data/
+models*/
+videos/
+*.mp4
+*.npy
+*.npz
+*.pt
+*.parquet
+*.log
+*.pid
+*.tar
+
+# 本机运行环境和快捷方式
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+收件箱
+生成的视频
+
+# 个人笔记、未发表的论文材料、与本项目无关的工具
+早上先看这里.md
+项目规划.md
+报告/
+论文材料/
+Kaggle数据集*
+kaggle_migrate_server.py
+
+# 投稿中的论文（录用前不公开）
+论文_LaTeX/
+wy-jnl-template-*.zip

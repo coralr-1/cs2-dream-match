@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- 模板：安装自动更新.sh 会把 __CS2SIM__ 换成运行环境目录（默认 ~/cs2sim）后装到 ~/Library/LaunchAgents -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.cs2sim.autoupdate</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>__CS2SIM__/auto_update.sh</string></array>
+  <key>StartInterval</key><integer>1800</integer>
+  <key>RunAtLoad</key><false/>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__CS2SIM__/logs/launchd.out</string>
+  <key>StandardErrorPath</key><string>__CS2SIM__/logs/launchd.err</string>
+</dict>
+</plist>

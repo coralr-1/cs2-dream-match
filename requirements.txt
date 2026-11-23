@@ -1,0 +1,12 @@
+# Python 3.12。Mac（Apple 芯片，MPS）和 Linux（CUDA）都可以；训练建议用 NVIDIA GPU。
+torch>=2.6
+numpy>=2.0
+pandas>=2.2
+pyarrow>=16
+scipy>=1.13
+matplotlib>=3.9
+imageio>=2.34
+imageio-ffmpeg>=0.5
+pillow>=10
+gradio>=5.0
+gradio_client>=1.0
