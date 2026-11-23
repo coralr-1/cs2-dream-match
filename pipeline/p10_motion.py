@@ -431,7 +431,8 @@ class Motion:
                     nxt[ok] = cand[ok]
                     todo &= ~ok
             out[k + 1, :, :2] = np.where(moving[:, None], nxt, cur)
-            yb = torch.multinomial(pyw, 1).squeeze(-1).cpu().numpy()
+            pw = pyw.float().cpu().double().numpy()                                  # 用带种子的 rng 抽朝向：同一剧本编号每次生成的走位完全一样
+            yb = np.array([rng.choice(NYAW, p=pw[i] / pw[i].sum()) for i in range(10)])
             out[k + 1, :, 2] = np.where(moving, (yb + 0.5) * (360 / NYAW), out[k, :, 2])
             if not use_phys:
                 continue

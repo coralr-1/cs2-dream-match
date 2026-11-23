@@ -35,7 +35,7 @@ The output is a broadcast-style vertical radar video. After training, everything
 - **梦幻对决**：从 2023–2026 年的选手里任选 5 人对 5 人，同一名选手可以用不同年份分别出现在两边。模拟上万场，给出每张图的胜率、比分分布和加时概率。
 - **Ban/Pick**：按两队选手的选图习惯，模拟 BO1 / BO3 / BO5 的禁选流程和系列赛胜率。
 - **2D 对战短视频**（9:16 竖屏）：
-  - 单张地图、BO1、BO3 全程（开头有 Ban/Pick 动画，最后是系列赛结算），以及选手个人高光（镜头跟随、击杀慢放）。
+  - 单张地图、BO1、BO3 全程（开头有 Ban/Pick 动画，最后是系列赛结算），以及选手个人高光：从已经生成的对局视频里剪出某名选手的多杀和残局回合（比分、击杀和原视频完全一样），镜头跟随、击杀慢放。
   - 导播风格小地图：深蓝地板（越亮越高）、墙线、障碍物、暗红包点。
   - 选手是编号徽章，带朝向尖角。
   - 烟雾、火团（都带倒计时）、闪光、手雷，以及 C4 倒计时。
@@ -151,13 +151,14 @@ bash train_final.sh                # 评估完成后，用全部数据训练正�
                 --b-players "donk:2026,sh1ro:2026,zont1x:2026,magixx:2026,tN1R:2026" --map de_inferno --out 生成的视频/b.mp4
 # BO3 全程（含 Ban/Pick）
 ./make_video.sh --a vitality:2025 --b spirit:2026 --series bo3 --out 生成的视频/bo3.mp4
-# 选手个人高光
-./make_video.sh --a spirit:2024 --b spirit:2026 --map de_dust2 --highlight donk:2026 --out 生成的视频/donk.mp4
+# 选手个人高光：从之前生成的对局里剪（系列赛默认剪全部图，--part 1 只剪第 2 张图）
+./make_video.sh --highlight ZywOo:2025 --from 生成的视频/a.mp4 --out 生成的视频/zywoo.mp4
+./make_video.sh --highlight donk:2026 --from 生成的视频/bo3.mp4 --part 1 --out 生成的视频/donk_map2.mp4
 # 批量（清单格式见 对阵清单示例.csv；map 一列写 bo1/bo3/bo5 时生成系列赛）
 ./make_video.sh --batch 对阵清单示例.csv --outdir 生成的视频/
 ```
 
-每条视频同时输出 `.png` 封面和 `.json` 剧本（逐回合事件、道具、比分、数据，方便写文案）。
+每条视频同时输出 `.png` 封面和 `.json` 剧本（逐回合事件、道具、比分、数据，方便写文案），对局视频还会存一份 `_tracks.npz` 走位，剪选手高光时直接复用，画面和原视频一致。同一个剧本编号每次生成的结果完全相同。
 
 **自动更新**：运行 `./安装自动更新.sh`，之后每 30 分钟检查一次收件箱；卸载用 `./卸载自动更新.sh`。
 

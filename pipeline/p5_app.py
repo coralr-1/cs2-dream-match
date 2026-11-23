@@ -300,37 +300,76 @@ def team_id_for(team_label, team):
     return (r.slug, int(r.year)) if {s for s, _ in team} == set(r.roster) and all(y == r.year for _, y in team) else None
 
 
-VIDEO_KINDS = ["单张地图", "BO1（含 Ban/Pick）", "BO3（含 Ban/Pick，全程）", "选手高光（镜头跟随一名选手）"]
+VIDEO_KINDS = ["单张地图", "BO1（含 Ban/Pick）", "BO3（含 Ban/Pick，全程）", "选手高光（从之前生成的对局里剪）"]
 
 
-def hl_choices(*sel):
-    opts = [x for x in sel if x]
-    return gr.update(choices=opts, value=opts[0] if opts else None)
+def match_choices(select=None):
+    """之前生成的对局视频列表（从新到旧）；select：要选中的对局视频路径（刚生成的那场），默认选最新一场。"""
+    import render_video as rv
+    opts = rv.list_matches(VIDEO_DIR)
+    val = opts[0][1] if opts else None
+    if select:
+        base = select.rsplit(".", 1)[0] + ".json|"
+        val = next((v for _, v in opts if v.startswith(base)), val)
+    return gr.update(choices=opts, value=val)
 
 
-def make_short_video(ta_label, tb_label, a1, a2, a3, a4, a5, b1, b2, b3, b4, b5, kind, map_cn, pool_label, first, seed, dramatic, hl_label,
+def hl_players(src):
+    """所选对局里的 10 名选手，默认选这场击杀最多的人。"""
+    if not src:
+        return gr.update(choices=[], value=None)
+    import render_video as rv
+    try:
+        players, meta = rv.match_players(src)
+    except Exception:
+        return gr.update(choices=[], value=None)
+    who = lambda p: p["name"] if p["name"].endswith("'" + str(p["year"])[-2:]) else f"{p['name']} · {p['year']}"   # 名字已带 'YY 时不重复年份
+    opts = [(f"{who(p)}（{meta.get('a_short' if p['team'] == 'A' else 'b_short', p['team'])}）· {p['kills']}-{p['deaths']}",
+             f"{p['steamid']}:{p['year']}") for p in players]
+    top = max(players, key=lambda p: (p["kills"], -p["deaths"]))
+    return gr.update(choices=opts, value=f"{top['steamid']}:{top['year']}")
+
+
+def kind_changed(kind):
+    hl = kind == VIDEO_KINDS[3]
+    return (gr.update(visible=hl), match_choices() if hl else gr.update(), gr.update(interactive=not hl), gr.update(interactive=not hl),
+            gr.update(interactive=not hl))
+
+
+def make_highlight(src, hl, progress):
+    if not src:
+        return gr.update(value=None), "### ⚠️ 还没有可以剪的对局。请先用「单张地图」或「BO1/BO3」生成一场对局视频，再来剪这场的选手高光。", gr.update()
+    if not hl:
+        return gr.update(value=None), "### ⚠️ 请在「高光选手」里选一名这场对局里的选手。", gr.update()
+    progress(0.0, desc="加载模型（第一次较慢）")
+    rv, assets = video_assets()
+    sid, yr = hl.rsplit(":", 1)
+    path, _, part = src.partition("|")
+    players, _ = rv.match_players(src)
+    name = next((p["name"] for p in players if p["steamid"] == sid and p["year"] == int(yr)), sid).replace("'", "")
+    sub = "" if part == "" else ("_全部图" if part == "all" else f"_第{int(part) + 1}图")
+    out = os.path.join(VIDEO_DIR, f"{name}{yr}高光_{os.path.basename(path).rsplit('.', 1)[0]}{sub}.mp4")
+    _, q, keys = rv.make_highlight_video(assets, src, out, (sid, int(yr)), progress=lambda f, d: progress(f, desc=d))
+    md = (f"**{q['name']} 高光**：{q['kills']}-{q['deaths']}，高光回合：{'、'.join(keys)}。比赛过程和原对局视频完全一样。\n\n"
+          f"视频已保存到：`{out}`。")
+    return gr.update(value=out), md, gr.update()
+
+
+def make_short_video(ta_label, tb_label, a1, a2, a3, a4, a5, b1, b2, b3, b4, b5, kind, map_cn, pool_label, first, seed, dramatic, src, hl,
                      progress=gr.Progress()):
+    if kind == VIDEO_KINDS[3]:
+        return make_highlight(src, hl, progress)
     A = [LABEL2PY[x] for x in (a1, a2, a3, a4, a5) if x]
     B = [LABEL2PY[x] for x in (b1, b2, b3, b4, b5) if x]
     err = check_teams(A, B) or (None if kind == VIDEO_KINDS[0] or VETO else "还没有 Ban/Pick 模型，只能生成单张地图。")
     if err:
-        return gr.update(value=None), f"### ⚠️ {err}"
+        return gr.update(value=None), f"### ⚠️ {err}", gr.update()
     progress(0.0, desc="加载模型（第一次较慢）")
     rv, assets = video_assets()
     ids = (team_id_for(ta_label, A), team_id_for(tb_label, B))
     nm = lambda ids_, team: f"{ids_[0]}{ids_[1]}" if ids_ else "自选" + NAME.get(team[0][0], "")
     os.makedirs(VIDEO_DIR, exist_ok=True)
     story = "dramatic" if dramatic else "typical"
-    if kind == VIDEO_KINDS[3]:
-        if not hl_label or hl_label not in (a1, a2, a3, a4, a5, b1, b2, b3, b4, b5):
-            return gr.update(value=None), "### ⚠️ 请在「高光选手」里选一名场上的选手。"
-        focus = LABEL2PY[hl_label]
-        out = os.path.join(VIDEO_DIR, f"{nm(ids[0], A)}_vs_{nm(ids[1], B)}_{NAME.get(focus[0], '')}{focus[1]}高光_{MAP_BY_CN[map_cn].replace('de_', '')}_s{int(seed)}.mp4")
-        _, q, keys = rv.make_highlight_video(assets, A, B, MAP_BY_CN[map_cn], out, focus, ids, n_sims=400, seed=int(seed),
-                                             progress=lambda f, d: progress(f, desc=d))
-        md = (f"**{q['name']} 高光**：本场 {q['kills']}-{q['deaths']}，高光回合 {', '.join(map(str, keys))}。\n\n"
-              f"视频已保存到：`{out}`。换一个「剧本编号」可以得到另一场。")
-        return gr.update(value=out), md
     if kind != VIDEO_KINDS[0]:
         fmt = "bo1" if kind.startswith("BO1") else "bo3"
         out = os.path.join(VIDEO_DIR, f"{nm(ids[0], A)}_vs_{nm(ids[1], B)}_{fmt}_s{int(seed)}.mp4")
@@ -341,8 +380,9 @@ def make_short_video(ta_label, tb_label, a1, a2, a3, a4, a5, b1, b2, b3, b4, b5,
         wname = team_display(ta_label, A, "A") if sa > sb else team_display(tb_label, B, "B")
         md = (f"**{wname} {max(sa, sb)} : {min(sa, sb)} 赢下 {fmt.upper()}**　" + "　".join(f"{MAP_CN[m]} {a}:{b}" for m, a, b, _ in results) +
               f"\n\nBan/Pick：" + " → ".join(MAP_CN[m] for m in v["order"]) +
-              f"\n\n视频已保存到：`{out}`（同名 .png 是封面，.json 是 Ban/Pick 和逐图剧本）。换一个「剧本编号」可以得到另一种流程和结果。")
-        return gr.update(value=out), md
+              f"\n\n视频已保存到：`{out}`（同名 .png 是封面，.json 是 Ban/Pick 和逐图剧本）。换一个「剧本编号」可以得到另一种流程和结果。"
+              "想要某名选手的高光，把「视频内容」切到「选手高光」即可从这场里剪。")
+        return gr.update(value=out), md, match_choices(out)
     out = os.path.join(VIDEO_DIR, f"{nm(ids[0], A)}_vs_{nm(ids[1], B)}_{MAP_BY_CN[map_cn].replace('de_', '')}_s{int(seed)}.mp4")
     rv.make_video(assets, A, B, MAP_BY_CN[map_cn], out, ids, n_sims=400, seed=int(seed), story=story,
                   progress=lambda f, d: progress(f, desc=d))
@@ -351,8 +391,9 @@ def make_short_video(ta_label, tb_label, a1, a2, a3, a4, a5, b1, b2, b3, b4, b5,
     fa, fb = st["story"]["final"]
     mvp = next(p for p in st["story"]["players"] if p["slot"] == st["story"]["mvp"])
     md = (f"**剧本比分 {fa} : {fb}**，MVP {mvp['name']}（{mvp['kills']}-{mvp['deaths']}）；赛前模拟 A 胜率 {st['p_win_A']:.0%}。\n\n"
-          f"视频已保存到：`{out}`（同名 .png 是封面，.json 是逐回合剧本）。换一个「剧本编号」可以得到另一场比赛。")
-    return gr.update(value=out), md
+          f"视频已保存到：`{out}`（同名 .png 是封面，.json 是逐回合剧本）。换一个「剧本编号」可以得到另一场比赛。"
+          "想要某名选手的高光，把「视频内容」切到「选手高光」即可从这场里剪。")
+    return gr.update(value=out), md, match_choices(out)
 
 
 # ---------------------------------------------------------------- 界面
@@ -390,19 +431,26 @@ with gr.Blocks(title="CS2 梦幻对决") as app:
         gr.Markdown("---\n### 生成短视频（9:16 竖屏，2D 小地图对战过程）")
         with gr.Row():
             vkind = gr.Radio(VIDEO_KINDS, value=VIDEO_KINDS[0], label="视频内容")
-            vmap = gr.Dropdown(list(MAP_CN.values()), value="Mirage", label="地图（「单张地图」「选手高光」时用）")
-            vhl = gr.Dropdown([], label="高光选手（「选手高光」时用，自动列出场上 10 人）")
+            vmap = gr.Dropdown(list(MAP_CN.values()), value="Mirage", label="地图（「单张地图」时用）")
+        with gr.Row(visible=False) as vhl_row:
+            vsrc = gr.Dropdown([], label="从哪场对局剪（之前生成的对局视频，最新的在最上面）", scale=3)
+            vhl = gr.Dropdown([], label="高光选手（这场的 10 人，默认击杀最多的）", scale=2)
+            vref = gr.Button("刷新对局列表", scale=1)
         with gr.Row():
             vseed = gr.Number(value=0, precision=0, label="剧本编号（换数字得到另一场）")
             vdram = gr.Checkbox(value=False, label="挑胶着的（单图打到加时；BO3 打满三图）")
             vbtn = gr.Button("生成短视频", variant="primary")
         gr.Markdown("用上面选好的两队。BO1/BO3 会先播 Ban/Pick（地图池和先手用上面「Ban/Pick 模拟」里的设置），再逐图打完。"
-                    "同一名选手可以用不同年份分别出现在两边。单图约 1–2 分钟，BO3 约 4–6 分钟，下方会显示进度条。")
+                    "同一名选手可以用不同年份分别出现在两边。单图约 1–2 分钟，BO3 约 4–6 分钟，下方会显示进度条。"
+                    "「选手高光」不重新模拟：从之前生成的某场对局视频里剪出这名选手的高光回合，比分、击杀和原视频完全一样；"
+                    "BO3 可以剪全部图，也可以只剪其中一张。")
         v_md = gr.Markdown()
         v_out = gr.Video(label="视频（生成时这里显示进度条）", height=640)
-        vbtn.click(make_short_video, [ta, tb] + A + B + [vkind, vmap, bpool, bfirst, vseed, vdram, vhl], [v_out, v_md], show_progress="full")
-        for dd in A + B:
-            dd.change(hl_choices, A + B, vhl)
+        vbtn.click(make_short_video, [ta, tb] + A + B + [vkind, vmap, bpool, bfirst, vseed, vdram, vsrc, vhl], [v_out, v_md, vsrc],
+                   show_progress="full")
+        vkind.change(kind_changed, vkind, [vhl_row, vsrc, vmap, vseed, vdram])
+        vsrc.change(hl_players, vsrc, vhl)
+        vref.click(match_choices, None, vsrc)
     with gr.Tab("选手画像"):
         with gr.Row():
             pl = gr.Dropdown(PLAYER_LABELS, label="选手 · 年份", filterable=True)

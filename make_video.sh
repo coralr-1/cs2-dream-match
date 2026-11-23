@@ -10,6 +10,7 @@
 #   ./make_video.sh --batch 对阵清单示例.csv --outdir 生成的视频/
 # 其他参数：--sims 400（模拟场数）  --seed 0（换个数字会得到另一场剧本）  --story dramatic（挑一场打到加时、最胶着的）
 # 含 Ban/Pick 的系列赛：--series bo1|bo3|bo5（忽略 --map）  --pool 0（地图池，0=最新）  --first A|B（谁先 ban，默认随机）
+# 选手高光（从之前生成的对局视频里剪）：--highlight donk:2026 --from 生成的视频/x.mp4 [--part 1]
 R="${CS2SIM:-$HOME/cs2sim}"
 export CS2_CLEAN="$R/data/clean" CS2_MODELS="$R/data/models" PYTORCH_ENABLE_MPS_FALLBACK=1
 exec "$R/.venv/bin/python" "$R/pipeline/render_video.py" "$@"

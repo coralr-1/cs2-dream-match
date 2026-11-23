@@ -8,6 +8,9 @@
     python render_video.py --batch matchups.csv --outdir out/
 系列赛（先模拟 Ban/Pick，再按选出的地图逐图打完）：
     python render_video.py --a vitality:2025 --b spirit:2026 --series bo3 --out out/bo3.mp4 [--pool 0] [--first A]
+选手高光（从之前生成的对局视频里剪，比赛过程和原视频完全一样）：
+    python render_video.py --highlight donk:2026 --from out/vit25_vs_spi26.mp4 --out out/donk.mp4
+    系列赛加 --part 1 只剪第 2 张图（从 0 起），默认剪全部图
 
 每条视频同时输出：同名 .png 封面、同名 .json 剧本（逐回合事件、比分、数据，方便写文案）。
 画面全程标注「AI 模拟对局 · 非真实比赛」。
@@ -569,10 +572,11 @@ class Renderer:
         f = self.fig
         side = q["team"]
         role = self.A.role.get((q["steamid"], q["year"]), "")
+        tname = self.meta["a_name" if side == "A" else "b_name"]
+        sub = tname if tname.endswith(str(q["year"])) else f"{tname} · {q['year']}"           # 队名里已带年份时不重复
         items = [f.text(0.5, 0.80, big, color="#ffd666", fontsize=40, fontweight="bold", ha="center"),
                  f.text(0.5, 0.71, q["name"], color=COL[side], fontsize=76, fontweight="bold", ha="center"),
-                 f.text(0.5, 0.665, f"{self.meta['a_name' if side == 'A' else 'b_name']} · {q['year']}" + (f" · {role}" if role else ""),
-                        color=DIM, fontsize=24, ha="center")]
+                 f.text(0.5, 0.665, sub + (f" · {role}" if role else ""), color=DIM, fontsize=24, ha="center")]
         for i, ln in enumerate(lines):
             items.append(f.text(0.5, 0.58 - i * 0.05, ln, color=TXT, fontsize=30, ha="center"))
         img = self.frame()
@@ -856,73 +860,233 @@ def make_video(A, teamA, teamB, map_name, out, team_ids=(None, None), n_sims=400
         cover = render_map(A, res, st, tracks, meta, emit, sub_prog(prog, 0.72, 0.98))
     prog(0.99, "保存封面和剧本")
     imageio.imwrite(out.rsplit(".", 1)[0] + ".png", cover)
-    st_out = {**{k: v for k, v in res.items() if k != "story"}, "story": st, "meta": meta, "key_rounds": keys}
+    st_out = {**{k: v for k, v in res.items() if k != "story"}, "story": st, "meta": meta, "key_rounds": keys,
+              "source": {"kind": "map", "teamA": teamA, "teamB": teamB, "team_ids": team_ids, "map": map_name, "seed": seed,
+                         "n_sims": n_sims, "story": story}}
     json.dump(st_out, open(out.rsplit(".", 1)[0] + ".json", "w"), ensure_ascii=False, indent=1, default=float)
+    save_tracks(out, {f"r{k}": v for k, v in tracks.items()})
     log(f"  完成 {out}：{n_frames[0] / FPS:.0f} 秒视频，总用时 {time.time() - t0:.0f}s")
     return out
 
 
-def make_highlight_video(A, teamA, teamB, map_name, out, focus, team_ids=(None, None), n_sims=400, seed=0, max_rounds=4, log=print, progress=None):
-    """选手个人高光：从模拟里挑这名选手发挥最好的一场，只播他的高光回合（多杀 / 残局 / 首杀），镜头跟随、击杀慢放。
-    focus: (steamid, 年份)，必须是两队 10 人之一。"""
+# ======================================================================== 选手高光：从之前生成的对局里剪
+def tracks_file(path):
+    """对局视频旁边的走位存档（关键回合每秒的位置和朝向），选手高光直接复用，保证和原视频画面一致。"""
+    return path.rsplit(".", 1)[0] + "_tracks.npz"
+
+
+def save_tracks(path, tracks):
+    if tracks:
+        np.savez_compressed(tracks_file(path), **{k: np.asarray(v, np.float32) for k, v in tracks.items()})
+
+
+def _is_match(d):
+    return isinstance(d, dict) and ("story" in d or "maps" in d) and "focus" not in d and "highlight_rounds" not in d
+
+
+def list_matches(video_dir):
+    """之前生成的对局视频（单张地图 / BO1 / BO3），从新到旧。返回 [(说明, 值)]；值是「json 路径|部分」，
+    部分为空 = 单张地图，数字 = 系列赛第几张图（从 0 起），all = 整个系列赛。"""
+    import glob
+    from datetime import datetime
+    out = []
+    for p in sorted(glob.glob(os.path.join(video_dir, "*.json")), key=os.path.getmtime, reverse=True):
+        if not os.path.exists(p[:-5] + ".mp4"):                               # 视频已经删掉的不列
+            continue
+        try:
+            d = json.load(open(p))
+        except Exception:
+            continue
+        if not _is_match(d):
+            continue
+        t = datetime.fromtimestamp(os.path.getmtime(p)).strftime("%m-%d %H:%M")
+        meta = d.get("meta", {})
+        vs = f"{meta.get('a_name', 'A')} vs {meta.get('b_name', 'B')}"
+        if "maps" in d:
+            fmt = d.get("veto", {}).get("fmt", "bo3").upper()
+            res = d.get("results") or [(m["story"]["map"], *m["story"]["final"], None) for m in d["maps"]]
+            sa = sum(a > b for _, a, b, *_ in res)
+            if len(d["maps"]) > 1:
+                out.append((f"{t} · {vs} · {fmt} 全部 {len(d['maps'])} 图（{sa}:{len(res) - sa}）", f"{p}|all"))
+            for k, m in enumerate(d["maps"]):
+                fa, fb = m["story"]["final"]
+                out.append((f"{t} · {vs} · {fmt} 第 {k + 1} 图 {MAP_CN[m['story']['map']]} {fa}:{fb}", f"{p}|{k}"))
+        else:
+            fa, fb = d["story"]["final"]
+            out.append((f"{t} · {vs} · {MAP_CN[d['story']['map']]} {fa}:{fb}", f"{p}|"))
+    return out
+
+
+def match_players(src):
+    """这场对局（或系列赛选中的部分）里的 10 名选手，含累计击杀/死亡。"""
+    path, _, part = src.partition("|")
+    if path.endswith(".mp4"):
+        path = path[:-4] + ".json"
+    d = json.load(open(path))
+    if "maps" in d:
+        sts = [m["story"] for m in d["maps"]] if part in ("", "all") else [d["maps"][int(part)]["story"]]
+    else:
+        sts = [d["story"]]
+    tot = {}
+    for st in sts:
+        for q in st["players"]:
+            t = tot.setdefault((q["steamid"], q["year"]), {**q, "kills": 0, "deaths": 0, "clutch_wins": 0, "opening_kills": 0})
+            for k in ("kills", "deaths", "clutch_wins", "opening_kills"):
+                t[k] += q[k]
+    return sorted(tot.values(), key=lambda q: q["slot"]), d.get("meta", {})
+
+
+def _guess_team_ids(A, st, meta):
+    """旧版剧本没存战队身份：按队名和阵容反推（5 人正好是该战队当年主力才算）。"""
+    ids = []
+    for side, slots in (("a", range(5)), ("b", range(5, 10))):
+        name = meta.get(f"{side}_name", "")
+        team = {(st["players"][i]["steamid"], st["players"][i]["year"]) for i in slots}
+        hit = None
+        if name and not name.startswith("自选") and name.rsplit(" ", 1)[-1].isdigit():
+            base, yr = name.rsplit(" ", 1)
+            for slug in [k for k, v in TEAM_CN.items() if v == base] + [base.lower().replace(" ", "-")]:
+                try:
+                    if set(A.roster(slug, int(yr))) == team:
+                        hit = (slug, int(yr))
+                        break
+                except Exception:
+                    pass
+        ids.append(hit)
+    return tuple(ids)
+
+
+def load_match(A, src):
+    """读之前生成的对局：返回 (原始 json, 各段 [{st, res, seed, prefix, k}], meta, 战队身份, 已存走位, 赛制)。"""
+    import re
+    path, _, part = src.partition("|")
+    if path.endswith(".mp4"):
+        path = path[:-4] + ".json"
+    d = json.load(open(path))
+    if not _is_match(d):
+        raise ValueError("这个文件不是对局视频的剧本（选手高光要从「单张地图」或「BO1/BO3」视频里剪）")
+    info = d.get("source", {})
+    m = re.search(r"_s(\d+)$", os.path.basename(path)[:-5])
+    seed0 = int(info.get("seed", int(m.group(1)) if m else 0))               # 旧版剧本没存剧本编号：按文件名里的 _s编号
+    trk = tracks_file(path)
+    saved = dict(np.load(trk)) if os.path.exists(trk) else {}
+    if "maps" in d:
+        idx = range(len(d["maps"])) if part in ("", "all") else [int(part)]
+        segs = [{"st": d["maps"][k]["story"], "res": d["maps"][k], "seed": int(d["maps"][k].get("seed", seed0 + 100 * (k + 1))),
+                 "prefix": f"m{k}_", "k": k} for k in idx]
+        fmt = d.get("veto", {}).get("fmt", "bo3")
+    else:
+        segs = [{"st": d["story"], "res": d, "seed": seed0, "prefix": "", "k": None}]
+        fmt = None
+    meta = dict(d["meta"])
+    team_ids = info["team_ids"] if "team_ids" in info else _guess_team_ids(A, segs[0]["st"], meta)
+    team_ids = tuple(tuple(t) if t else None for t in team_ids)
+    return d, path, segs, meta, team_ids, saved, fmt
+
+
+def make_highlight_video(A, src, out, focus, max_rounds=None, log=print, progress=None):
+    """选手个人高光：从之前生成的对局里剪出这名选手的高光回合（多杀 / 残局 / 首杀），镜头跟随、击杀慢放。
+    src: 对局视频的 .json（或 .mp4）路径，可加「|图序号」或「|all」指定系列赛的某张图 / 全部图；
+    focus: (steamid, 年份)，必须是这场对局的 10 人之一。
+    比赛结果、每回合谁杀了谁都和原视频完全一样；原视频里完整播放过的回合直接用存下的走位，
+    原视频里快速带过的回合按同一个剧本编号补生成走位和道具，并存回走位存档，下次剪同一回合画面一致。"""
     import imageio.v2 as imageio
     prog = progress or (lambda f, d: None)
     t0 = time.time()
     focus = (str(focus[0]), int(focus[1]))
-    prog(0.01, f"模拟 {n_sims} 场，挑他发挥最好的一场")
-    res = A.G.generate_match(teamA, teamB, map_name, n_sims=n_sims, seed=seed, story=("player", focus), team_ids=team_ids, guide=A.S4,
-                             progress=lambda rr: prog(0.55 * min(rr, 24) / 24, f"模拟 {n_sims} 场比赛：打到第 {rr} 回合"))
-    st = res["story"]
-    q = next(p for p in st["players"] if p["steamid"] == focus[0] and p["year"] == focus[1])
-    fs = q["slot"]
+    prog(0.01, "读取之前的对局")
+    d, path, segs, meta, team_ids, saved, fmt = load_match(A, src)
+    for sg in segs:
+        sg["q"] = next((p for p in sg["st"]["players"] if p["steamid"] == focus[0] and p["year"] == focus[1]), None)
+        if sg["q"] is None:
+            raise ValueError("这名选手不在这场对局里")
     scored = []
-    for r in st["rounds"]:
-        kills = [e for e in r["events"] if e["type"] == "kill" and e["attacker"] == fs]
-        end = next((e for e in r["events"] if e["type"] == "end"), {})
-        clutch = end.get("clutch", {}).get("player") == fs
-        opening = any(e.get("opening") for e in kills)
-        sc = len(kills) * 2 + (5 if clutch else 0) + (1 if opening else 0)
-        if len(kills) >= 2 or clutch:
-            scored.append((sc, r["round"], len(kills), clutch))
-    chosen = sorted(sorted(scored, reverse=True)[:max_rounds], key=lambda x: x[1])
-    if not chosen:                                                            # 实在没有多杀：取他击杀最多的回合
-        best = max(st["rounds"], key=lambda r: sum(e["type"] == "kill" and e["attacker"] == fs for e in r["events"]))
-        chosen = [(0, best["round"], 1, False)]
-    keys = [c[1] for c in chosen]
-    log(f"  高光回合 {keys}")
-    tracks = {}
-    for i, r in enumerate(r for r in st["rounds"] if r["round"] in keys):
-        prog(0.55 + 0.15 * i / len(keys), f"生成高光回合的道具和走位 {i + 1}/{len(keys)}")
-        if A.U is not None:
-            r["utility"] = A.U.generate(st, r, team_ids, seed=seed + r["round"])
-        cond, death, n = plan_tensors(A, st, r, team_ids)
-        tracks[r["round"]] = A.M.generate(cond, map_name, n, death, seed=seed + r["round"], events=r["events"], phys=A.P, utility=r.get("utility"))
-    meta = team_meta(teamA, teamB, team_ids, map_name, n_sims)
-    meta["title"] = f"选手高光 · {MAP_CN[map_name]} · " + meta["title"].rsplit(" · ", 1)[-1]
-    multi = sum(1 for r in st["rounds"] if sum(e["type"] == "kill" and e["attacker"] == fs for e in r["events"]) >= 3)
-    fa, fb = st["final"]
-    won = (fa > fb) == (q["team"] == "A")
+    for si, sg in enumerate(segs):
+        fs = sg["q"]["slot"]
+        for r in sg["st"]["rounds"]:
+            kills = [e for e in r["events"] if e["type"] == "kill" and e["attacker"] == fs]
+            end = next((e for e in r["events"] if e["type"] == "end"), {})
+            clutch = (end.get("clutch") or {}).get("player") == fs
+            opening = any(e.get("opening") for e in kills)
+            sc = len(kills) * 2 + (5 if clutch else 0) + (1 if opening else 0)
+            if len(kills) >= 2 or clutch:
+                scored.append((sc, si, r["round"]))
+    max_rounds = max_rounds or (4 if len(segs) == 1 else 6)
+    chosen = sorted(sorted(scored, reverse=True)[:max_rounds], key=lambda x: (x[1], x[2]))
+    if not chosen:                                                            # 实在没有多杀和残局：取他击杀最多的回合
+        si, r = max(((si, r) for si, sg in enumerate(segs) for r in sg["st"]["rounds"]),
+                    key=lambda x: sum(e["type"] == "kill" and e["attacker"] == segs[x[0]]["q"]["slot"] for e in x[1]["events"]))
+        chosen = [(0, si, r["round"])]
+    label = lambda si, rn: (f"第 {segs[si]['k'] + 1} 图第 {rn} 回合" if segs[si]["k"] is not None else f"第 {rn} 回合")
+    log(f"  高光回合：{'、'.join(label(si, rn) for _, si, rn in chosen)}")
+    tracks, new = {}, {}
+    for i, (_, si, rn) in enumerate(chosen):
+        sg = segs[si]
+        key = f"{sg['prefix']}r{rn}"
+        r = next(x for x in sg["st"]["rounds"] if x["round"] == rn)
+        if r.get("utility") is None and A.U is not None:                     # 原视频完整播放过的回合，剧本里已存道具
+            r["utility"] = A.U.generate(sg["st"], r, team_ids, seed=sg["seed"] + rn)
+        if key in saved:
+            tracks[(si, rn)] = saved[key]
+            continue
+        prog(0.03 + 0.4 * i / len(chosen), f"补全{label(si, rn)}的走位（{i + 1}/{len(chosen)}）")
+        cond, death, n = plan_tensors(A, sg["st"], r, team_ids)
+        tracks[(si, rn)] = new[key] = A.M.generate(cond, sg["st"]["map"], n, death, seed=sg["seed"] + rn, events=r["events"], phys=A.P,
+                                                   utility=r.get("utility"))
+    if new:
+        save_tracks(path, {**saved, **new})
+    # 片头 / 片尾的数据：这场（系列赛选「全部」时为全部图）的累计数据
+    q = {**segs[0]["q"]}
+    for k in ("kills", "deaths", "clutch_wins", "opening_kills"):
+        q[k] = sum(sg["q"][k] for sg in segs)
+    multi = sum(1 for sg in segs for r in sg["st"]["rounds"]
+                if sum(e["type"] == "kill" and e["attacker"] == sg["q"]["slot"] for e in r["events"]) >= 3)
+    if len(segs) == 1:
+        fa, fb = segs[0]["st"]["final"]
+        won = (fa > fb) == (q["team"] == "A")
+        what = f"比赛 {max(fa, fb)}:{min(fa, fb)}" if fmt is None else f"{fmt.upper()} 第 {segs[0]['k'] + 1} 图 {max(fa, fb)}:{min(fa, fb)}"
+        mvp = segs[0]["st"]["mvp"] == q["slot"]
+        scope = "本场" if fmt is None else "本图"
+    else:
+        sa = sum((sg["st"]["final"][0] > sg["st"]["final"][1]) for sg in segs)
+        won = (sa > len(segs) - sa) == (q["team"] == "A")
+        what = f"{fmt.upper()} {max(sa, len(segs) - sa)}:{min(sa, len(segs) - sa)}"
+        tot, _ = match_players(f"{path}|all")
+        win_team = "A" if sa > len(segs) - sa else "B"
+        best = max([p for p in tot if p["team"] == win_team], key=lambda p: (p["kills"] - p["deaths"], p["kills"]))
+        mvp = (best["steamid"], best["year"]) == focus
+        scope = "系列赛"
+    yrs = "/".join(map(str, sorted({p["year"] for p in segs[0]["st"]["players"]})))
     w, emit, n_frames = open_writer(out)
+    cover, R = None, None
     with w:
-        R = Renderer(A, st, res, meta, tracks, emit)
-        cover = R.highlight_card(q, [f"本场 {q['kills']} 杀 {q['deaths']} 死", f"{multi} 次三杀以上 · {q['clutch_wins']} 次残局获胜",
-                                     f"比赛 {max(fa, fb)}:{min(fa, fb)} {'获胜' if won else '惜败'}"], INTRO_FRAMES + 30)
-        live = res["live_win_A"]
-        for i, (_, rn, nk, clutch) in enumerate(chosen):
-            r = next(x for x in st["rounds"] if x["round"] == rn)
-            prog(0.72 + 0.25 * i / len(chosen), f"渲染高光 {i + 1}/{len(chosen)}：第 {rn} 回合")
-            a, b = r["score_before"]
-            after = (a + 1, b) if r["winner"] == "A" else (a, b + 1)
-            R.key_round(r, tracks[rn], after, live, focus=fs)
+        for si in sorted({c[1] for c in chosen}):
+            sg = segs[si]
+            if R is not None:
+                plt.close(R.fig)
+            mt = {**meta, "series_bar": False,
+                  "title": f"选手高光 · {MAP_CN[sg['st']['map']]}" + (f" · {fmt.upper()} 第 {sg['k'] + 1} 图" if sg["k"] is not None else f" · {yrs}")}
+            R = Renderer(A, sg["st"], sg["res"], mt, {}, emit)
+            if cover is None:
+                cover = R.highlight_card(q, [f"{scope} {q['kills']} 杀 {q['deaths']} 死", f"{multi} 次三杀以上 · {q['clutch_wins']} 次残局获胜",
+                                             f"{what} {'获胜' if won else '惜败'}"], INTRO_FRAMES + 30)
+            for j, (_, sj, rn) in enumerate(c for c in chosen if c[1] == si):
+                r = next(x for x in sg["st"]["rounds"] if x["round"] == rn)
+                done = sum(1 for c in chosen if (c[1], c[2]) < (si, rn))
+                prog(0.45 + 0.5 * done / len(chosen), f"渲染高光 {done + 1}/{len(chosen)}：{label(si, rn)}")
+                a, b = r["score_before"]
+                after = (a + 1, b) if r["winner"] == "A" else (a, b + 1)
+                R.key_round(r, tracks[(si, rn)], after, sg["res"]["live_win_A"], focus=sg["q"]["slot"])
         prog(0.98, "渲染结尾")
         R.highlight_card(q, [f"{q['kills']}-{q['deaths']} · 首杀 {q['opening_kills']} · 残局 {q['clutch_wins']}",
-                             "★ 全场 MVP ★" if st["mvp"] == fs else f"{len(chosen)} 个高光回合"], OUTRO_FRAMES, big="高光集锦")
+                             f"★ {'全场' if scope == '本场' else scope} MVP ★" if mvp else f"{len(chosen)} 个高光回合"], OUTRO_FRAMES, big="高光集锦")
         plt.close(R.fig)
     imageio.imwrite(out.rsplit(".", 1)[0] + ".png", cover)
-    json.dump({**{k: v for k, v in res.items() if k != "story"}, "story": st, "meta": meta, "focus": fs, "highlight_rounds": keys},
+    json.dump({"source": {"kind": "highlight", "from": os.path.basename(path), "part": src.partition("|")[2]}, "meta": meta,
+               "focus": [focus[0], focus[1]], "player": q, "highlight_rounds": [[segs[si]["k"], rn] for _, si, rn in chosen]},
               open(out.rsplit(".", 1)[0] + ".json", "w"), ensure_ascii=False, indent=1, default=float)
     log(f"  完成 {out}：{n_frames[0] / FPS:.0f} 秒视频，总用时 {time.time() - t0:.0f}s")
-    return out, q, keys
+    return out, q, [label(si, rn) for _, si, rn in chosen]
 
 
 # ======================================================================== Ban/Pick 与系列赛
@@ -1077,7 +1241,7 @@ def make_series_video(A, teamA, teamB, fmt, out, team_ids=(None, None), n_sims=4
     meta0 = team_meta(teamA, teamB, team_ids, None, n_sims)
     meta0["title"] = f"梦幻对决 · {fmt.upper()} · " + meta0["title"].split(" · ", 1)[1]
     w, emit, n_frames = open_writer(out)
-    stories, results, tot = [], [], {}
+    stories, results, tot, all_tracks = [], [], {}, {}
     with w:
         VR = VetoRenderer(meta0, veto, wp, emit)
         prog(0.03, "渲染 Ban/Pick")
@@ -1106,7 +1270,8 @@ def make_series_video(A, teamA, teamB, fmt, out, team_ids=(None, None), n_sims=4
             meta["series_after"] = f"系列赛 {sa2} : {sb2}" if fmt != "bo1" else ""
             render_map(A, res, st, tracks, meta, emit, sub_prog(lambda f, d, k=k: prog(f, f"第 {k + 1}/{n_maps} 图 {MAP_CN[m]}：{d}"), p0 + 0.72 * span, p0 + span))
             results.append((m, fa, fb, "A" if fa > fb else "B"))
-            stories.append({**{x: y for x, y in res.items() if x != "story"}, "story": st, "key_rounds": keys})
+            stories.append({**{x: y for x, y in res.items() if x != "story"}, "story": st, "key_rounds": keys, "map": m, "seed": seed + 100 * (k + 1)})
+            all_tracks.update({f"m{k}_r{rn}": tr for rn, tr in tracks.items()})
             for q in st["players"]:
                 t = tot.setdefault(q["slot"], {"name": q["name"], "team": q["team"], "kills": 0, "deaths": 0})
                 t["kills"] += q["kills"]
@@ -1117,8 +1282,11 @@ def make_series_video(A, teamA, teamB, fmt, out, team_ids=(None, None), n_sims=4
             VR.series_end(results, list(tot.values()))
         VR.close()
     imageio.imwrite(out.rsplit(".", 1)[0] + ".png", cover)
-    json.dump({"veto": veto, "map_wp": wp, "winners": winners, "results": results, "maps": stories, "meta": meta0},
+    json.dump({"veto": veto, "map_wp": wp, "winners": winners, "results": results, "maps": stories, "meta": meta0,
+               "source": {"kind": fmt, "teamA": teamA, "teamB": teamB, "team_ids": team_ids, "seed": seed, "n_sims": n_sims, "story": story,
+                          "preset": preset, "first": first}},
               open(out.rsplit(".", 1)[0] + ".json", "w"), ensure_ascii=False, indent=1, default=float)
+    save_tracks(out, all_tracks)
     log(f"  完成 {out}：{n_frames[0] / FPS:.0f} 秒视频，{n_maps} 张图，总用时 {time.time() - t0:.0f}s")
     return out, veto, results
 
@@ -1139,7 +1307,9 @@ def main():
     ap.add_argument("--series", choices=["bo1", "bo3", "bo5"], help="生成含 Ban/Pick 的系列赛（忽略 --map）")
     ap.add_argument("--pool", type=int, default=0, help="地图池预设编号，0 = 最新")
     ap.add_argument("--first", choices=["A", "B"], help="谁先 ban（默认随机）")
-    ap.add_argument("--highlight", help="选手个人高光：选手名:年份（必须在两队阵容里），配合 --map")
+    ap.add_argument("--highlight", help="选手个人高光：选手名:年份，配合 --from 指定从哪场之前生成的对局里剪")
+    ap.add_argument("--from", dest="src", help="之前生成的对局视频（.mp4 或同名 .json）")
+    ap.add_argument("--part", default="all", help="系列赛只剪某张图：0/1/2…（默认 all = 全部图）")
     args = ap.parse_args()
     A = Assets()
 
@@ -1162,16 +1332,22 @@ def main():
                                   preset=A.V.presets[args.pool]["label"], first=args.first)
             else:
                 make_video(A, ta, tb, r["map"], os.path.join(args.outdir, name + ".mp4"), (ia, ib), args.sims, sd, sty)
+    elif args.highlight:
+        if not args.src:
+            raise SystemExit("选手高光要从之前生成的对局里剪：请用 --from 指定那场对局的视频（.mp4）或剧本（.json）")
+        n_, y_ = args.highlight.rsplit(":", 1)
+        players, _ = match_players(args.src)
+        base = lambda nm: nm.rsplit("'", 1)[0] if nm[-3:-2] == "'" and nm[-2:].isdigit() else nm      # 同名选手两边都有时名字带 'YY
+        hit = [p for p in players if base(p["name"]).lower() == n_.strip().lower() and p["year"] == int(y_)]
+        if not hit:
+            raise SystemExit(f"{args.highlight} 不在这场对局里。场上选手：" + "、".join(f"{p['name']}:{p['year']}" for p in players))
+        src = args.src if args.src.endswith(".json") else args.src.rsplit(".", 1)[0] + ".json"
+        d = json.load(open(src))
+        make_highlight_video(A, f"{src}|{args.part if 'maps' in d else ''}", args.out, (hit[0]["steamid"], hit[0]["year"]))
     else:
         ta, ia = side(args.a, args.a_players)
         tb, ib = side(args.b, args.b_players)
-        if args.highlight:
-            n_, y_ = args.highlight.rsplit(":", 1)
-            hit = A.by_name.get((n_.strip().lower(), int(y_)))
-            if hit is None:
-                raise SystemExit(f"找不到选手 {args.highlight}")
-            make_highlight_video(A, ta, tb, args.map, args.out, (hit[0], int(y_)), (ia, ib), args.sims, args.seed)
-        elif args.series:
+        if args.series:
             make_series_video(A, ta, tb, args.series, args.out, (ia, ib), args.sims, args.seed, args.story,
                               preset=A.V.presets[args.pool]["label"], first=args.first)
         else:
