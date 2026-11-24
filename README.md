@@ -26,7 +26,7 @@ A hierarchical generative simulator for professional *Counter-Strike 2*, trained
 - **Data-derived map physics.** Walkability, line of sight, terrain and a library of real duel lines keep shooters able to see their targets, and make players who see each other fight.
 - **Veto model.** Map-selection habits are learned from series map order, with unobserved bans treated as latent variables.
 
-The output is a broadcast-style vertical radar video. After training, everything runs offline on a laptop (a Gradio web UI and a CLI). The code is MIT-licensed; data and trained models are **not** included (see *Data*).
+The output is a broadcast-style vertical radar video. After training, everything runs offline on a laptop (a Gradio web UI and a CLI). The code is MIT-licensed. Data and trained models are **not** in this repository; the dataset (raw demos and the cleaned tables) is at [weyoung-open-lab/cs2-s-tier-demos](https://github.com/weyoung-open-lab/cs2-s-tier-demos) (see *Data*).
 
 ---
 
@@ -85,11 +85,16 @@ The output is a broadcast-style vertical radar video. After training, everything
 
 ## 数据
 
-本仓库**不包含数据和训练好的模型**。
+本仓库**不包含数据和训练好的模型**。数据集放在单独的仓库 **[weyoung-open-lab/cs2-s-tier-demos](https://github.com/weyoung-open-lab/cs2-s-tier-demos)**（文件在 Releases 里），有数据字典、文件清单、校验码和一个下载脚本：
 
-数据来自 Kaggle 上的公开数据集：作者 `zhangx1ang` 用 [awpy](https://github.com/pnxenopoulos/awpy) 解析的 CS2 S 级赛事录像，Parquet 格式，共约 134 GB。包括：
+```bash
+git clone https://github.com/weyoung-open-lab/cs2-s-tier-demos.git && cd cs2-s-tier-demos
+python download.py clean --out $CS2_DATA   # 清洗后的表（约 1.7 GB），够直接从 p4 开始训练
+python download.py raw   --out $CS2_DATA   # 原始数据（约 134 GB），从 p0 开始完整重跑时才需要
+```
 
-`cs2-s-tier-demos-member-a`、`-member-b`、`-member-c`、`-member-d`、`-member-e`、`-member-e2`、`-patch`
+数据是 2023–2026 年 S 级赛事录像，用 [awpy](https://github.com/pnxenopoulos/awpy) 解析成 Parquet，原始数据约 134 GB，同时以 7 个数据集的形式发布在 Kaggle（作者 `zhangx1ang`）：
+`cs2-s-tier-demos-member-a`、`-member-b`、`-member-c`、`-member-d`、`-member-e`、`-member-e2`、`-patch`。
 
 原数据集的使用条款为**仅用于科研**。使用数据，或者用数据训练出来的模型时，请遵守原条款；公开发布生成的视频之前，请自行确认是否符合条款。
 

@@ -30,3 +30,4 @@ kaggle_migrate_server.py
 # 投稿中的论文（录用前不公开）
 论文_LaTeX/
 wy-jnl-template-*.zip
+数据集仓库/
